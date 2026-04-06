@@ -35,9 +35,8 @@ app.get('/templates', (req, res) => {
           return res.status(500).json({ error: 'Invalid templates.xml format' });
         }
 
-        // Normalise into a flat array of { id, label, description, content }
         const raw = result?.templates?.template;
-        const list = Array.isArray(raw) ? raw : [raw]; // handle single-template edge case
+        const list = Array.isArray(raw) ? raw : [raw];
 
         const templates = list.map(t => ({
           id:          t.$.id,
@@ -99,6 +98,61 @@ app.post('/compile', (req, res) => {
   });
 });
 
+// ── LaTeX sanity checker ──────────────────────────────────────────────
+// Known valid environments and commands — catches hallucinated ones before compile
+function validateLatex(latex) {
+  const errors = [];
+
+  // Must have \documentclass
+  if (!/\\documentclass/.test(latex)) {
+    errors.push('Missing \\documentclass');
+  }
+
+  // Must have \begin{document} and \end{document}
+  if (!/\\begin\{document\}/.test(latex)) {
+    errors.push('Missing \\begin{document}');
+  }
+  if (!/\\end\{document\}/.test(latex)) {
+    errors.push('Missing \\end{document}');
+  }
+
+  // Forbidden XeLaTeX-only packages
+  const forbiddenPkgs = ['fontspec', 'xunicode', 'xltxtra', 'unicode-math'];
+  for (const pkg of forbiddenPkgs) {
+    if (new RegExp(`\\\\usepackage.*\\{${pkg}\\}`).test(latex)) {
+      errors.push(`Forbidden package: ${pkg} (XeLaTeX only)`);
+    }
+  }
+
+  // Known valid LaTeX environments
+  const validEnvs = [
+    'document', 'abstract', 'itemize', 'enumerate', 'description',
+    'tabular', 'table', 'figure', 'equation', 'align', 'align*',
+    'gather', 'gather*', 'multline', 'multline*', 'split',
+    'array', 'matrix', 'pmatrix', 'bmatrix', 'vmatrix', 'Vmatrix',
+    'center', 'flushleft', 'flushright', 'quote', 'quotation',
+    'verbatim', 'verse', 'minipage', 'tikzpicture', 'scope',
+    'thebibliography', 'titlepage', 'list', 'trivlist',
+    'lstlisting', 'minted', 'frame', 'block', 'alertblock', 'exampleblock',
+    'cases', 'dcases', 'rcases', 'subequations', 'empheq',
+    'longtable', 'supertabular', 'tabularx', 'tabulary', 'booktabs',
+    'multicols', 'wrapfigure', 'subfigure', 'subtable',
+  ];
+
+  // Extract all \begin{...} environment names from the latex
+  const usedEnvs = [...latex.matchAll(/\\begin\{([^}]+)\}/g)].map(m => m[1]);
+
+  for (const env of usedEnvs) {
+    // Allow starred variants automatically (e.g. equation*)
+    const base = env.replace(/\*$/, '');
+    if (!validEnvs.includes(env) && !validEnvs.includes(base)) {
+      errors.push(`Unknown environment: \\begin{${env}}`);
+    }
+  }
+
+  return errors;
+}
+
 // ── /ai-resume  – Groq AI route ──────────────────────────────────────
 app.post('/ai-resume', async (req, res) => {
   const { prompt } = req.body;
@@ -118,6 +172,16 @@ app.post('/ai-resume', async (req, res) => {
     'mixtral-8x7b-32768',
   ];
 
+  const systemPrompt = `You are a LaTeX expert. Output ONLY raw compilable LaTeX code for pdflatex.
+No markdown fences, no explanations, nothing outside the LaTeX document.
+STRICT RULES:
+- Never use fontspec, xunicode, xltxtra, or any XeLaTeX/LuaLaTeX-only packages.
+- Always use pdflatex-compatible packages only: inputenc, fontenc, lmodern, geometry, hyperref, titlesec, enumitem, multicol, tabularx, booktabs, xcolor, graphicx.
+- Only use real, standard LaTeX environments: itemize, enumerate, tabular, table, figure, equation, align, center, minipage, verbatim, description, quote, flushleft, flushright.
+- NEVER invent or combine environment names. Do NOT use environments like "itemular", "tabulize", "listenum" or anything non-standard.
+- The document must compile with pdflatex without errors.
+- Do not include any text before \\documentclass or after \\end{document}.`;
+
   let lastError = '';
 
   for (const model of models) {
@@ -131,7 +195,7 @@ app.post('/ai-resume', async (req, res) => {
         body: JSON.stringify({
           model,
           messages: [
-            { role: 'system', content: 'You are a LaTeX expert. Output ONLY raw compilable LaTeX code. No markdown fences, no explanations, nothing outside the LaTeX document.' },
+            { role: 'system', content: systemPrompt },
             { role: 'user', content: prompt }
           ],
           temperature: 0.3,
@@ -156,6 +220,14 @@ app.post('/ai-resume', async (req, res) => {
 
       if (!latex) { lastError = 'Empty response from model'; continue; }
 
+      // ── Validate before returning ──
+      const validationErrors = validateLatex(latex);
+      if (validationErrors.length > 0) {
+        lastError = `Validation failed: ${validationErrors.join('; ')}`;
+        console.warn(`Model ${model} produced invalid LaTeX: ${lastError}`);
+        continue; // try next model
+      }
+
       console.log(`Success with model: ${model}, length: ${latex.length}`);
       return res.json({ latex });
 
@@ -176,5 +248,5 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
-  console.log('Groq API key:', process.env.GROQ_API_KEY ? 'loaded ✓' : 'MISSING ← add to .env!');
+  console.log('Groq API key:', process.env.GROQ_API_KEY ? 'loaded ✓' : 'MISSING <- add to .env!');
 });
