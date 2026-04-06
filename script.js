@@ -1,3 +1,4 @@
+/*import dotenv()*/
 document.addEventListener('DOMContentLoaded', () => {
   // ====================== DOM ELEMENTS ======================
   const editor               = document.getElementById('latex-editor');

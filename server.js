@@ -1,5 +1,4 @@
 require('dotenv').config();
-
 const express  = require('express');
 const fs       = require('fs');
 const path     = require('path');
@@ -9,7 +8,7 @@ const xml2js   = require('xml2js');
 
 const app  = express();
 const port = process.env.PORT || 3000;
-
+console.log("KEY:", process.env.GROQ_API_KEY);
 app.use(express.static(__dirname));
 app.use(express.json({ limit: '10mb' }));
 
@@ -100,7 +99,7 @@ app.post('/compile', (req, res) => {
   });
 });
 
-// ── /ai-resume  – Gemini AI route ────────────────────────────────────
+// ── /ai-resume  – Groq AI route ──────────────────────────────────────
 app.post('/ai-resume', async (req, res) => {
   const { prompt } = req.body;
 
@@ -108,45 +107,47 @@ app.post('/ai-resume', async (req, res) => {
     return res.status(400).json({ error: 'No prompt provided' });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY missing from .env' });
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'GROQ_API_KEY missing from .env' });
 
   console.log('--- AI RESUME REQUEST ---  length:', prompt.length);
 
   const models = [
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-lite',
-    'gemini-1.5-flash-latest',
-    'gemini-1.5-pro-latest',
+    'llama-3.3-70b-versatile',
+    'llama-3.1-70b-versatile',
+    'mixtral-8x7b-32768',
   ];
 
   let lastError = '';
 
   for (const model of models) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
     try {
-      const geminiResponse = await fetch(url, {
+      const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
         body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: 'You are a LaTeX expert. Output ONLY raw compilable LaTeX code. No markdown fences, no explanations, nothing outside the LaTeX document.' }]
-          },
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3, maxOutputTokens: 4096 }
-        }),
+          model,
+          messages: [
+            { role: 'system', content: 'You are a LaTeX expert. Output ONLY raw compilable LaTeX code. No markdown fences, no explanations, nothing outside the LaTeX document.' },
+            { role: 'user', content: prompt }
+          ],
+          temperature: 0.3,
+          max_tokens: 4096
+        })
       });
 
-      const data = await geminiResponse.json();
+      const data = await groqRes.json();
 
-      if (!geminiResponse.ok) {
-        lastError = data?.error?.message || `HTTP ${geminiResponse.status}`;
+      if (!groqRes.ok) {
+        lastError = data?.error?.message || `HTTP ${groqRes.status}`;
         console.warn(`Model ${model} failed: ${lastError}`);
         continue;
       }
 
-      let latex = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      let latex = data?.choices?.[0]?.message?.content || '';
       latex = latex
         .replace(/^```latex\s*/im, '')
         .replace(/^```\s*/im, '')
@@ -164,7 +165,7 @@ app.post('/ai-resume', async (req, res) => {
     }
   }
 
-  return res.status(502).json({ error: `All Gemini models failed. Last error: ${lastError}` });
+  return res.status(502).json({ error: `All Groq models failed. Last error: ${lastError}` });
 });
 
 // ── Global error handler ──────────────────────────────────────────────
@@ -175,5 +176,5 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
-  console.log('Gemini API key:', process.env.GEMINI_API_KEY ? 'loaded ✓' : 'MISSING ← add to .env!');
+  console.log('Groq API key:', process.env.GROQ_API_KEY ? 'loaded ✓' : 'MISSING ← add to .env!');
 });
